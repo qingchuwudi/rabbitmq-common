@@ -6,7 +6,7 @@ It's meant to be included in your rebar projects in your rebar.config file:
 
 ```Erlang
 {deps, [
-  {rabbit_common, ".*", {git, "git://github.com/qingchuwudi/rabbit_common.git", {tag, "rabbitmq_v3_7_0_milestone8"}}}
+  {rabbit_common, ".*", {git, "git://github.com/qingchuwudi/rabbit_common.git", {tag, "v3_7_0_milestone8"}}}
 ]}.
 ```
 
