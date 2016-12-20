@@ -6,11 +6,11 @@ It's meant to be included in your rebar projects in your rebar.config file:
 
 ```Erlang
 {deps, [
-  {rabbit_common, ".*", {git, "git://github.com/qingchuwudi/rabbit_common.git", {branch, "rebar2"}}}
+  {rabbit_common, ".*", {git, "git://github.com/qingchuwudi/rabbit_common.git", {tag, "rabbitmq_v3_7_0_milestone8"}}}
 ]}.
 ```
 
-The "rebar2" branch of this port is a simple re-packaging of the rabbit_common AMQP client dependency, which can be compiled with [rebar2][3] but not [rebar3][4]. And it corresponding to [rabbitmq-common][2] version **rabbitmq_v3_7_0_milestone5**.
+The "rebar2" branch of this port is a simple re-packaging of the rabbit_common AMQP client dependency, which can be compiled with [rebar2][3] but not [rebar3][4]. And it corresponding to [rabbitmq-common][2] version **rabbitmq_v3_7_0_milestone8**.
 
 License
 
