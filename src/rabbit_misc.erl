@@ -56,7 +56,7 @@
 -export([const/1]).
 -export([ntoa/1, ntoab/1]).
 -export([is_process_alive/1]).
--export([pget/2, pget/3, pget_or_die/2, pmerge/3, pset/3, plmerge/2]).
+-export([pget/2, pget/3, pupdate/3, pget_or_die/2, pmerge/3, pset/3, plmerge/2]).
 -export([format_message_queue/2]).
 -export([append_rpc_all_nodes/4]).
 -export([os_cmd/1]).
@@ -64,7 +64,6 @@
 -export([gb_sets_difference/2]).
 -export([version/0, otp_release/0, which_applications/0]).
 -export([sequence_error/1]).
--export([json_encode/1, json_decode/1, json_to_term/1, term_to_json/1]).
 -export([check_expiry/1]).
 -export([base64url/1]).
 -export([interval_operation/5]).
@@ -78,6 +77,7 @@
 -export([rpc_call/4, rpc_call/5]).
 -export([report_default_thread_pool_size/0]).
 -export([get_gc_info/1]).
+-export([group_proplists_by/2]).
 
 %% Horrible macro to use in guards
 -define(IS_BENIGN_EXIT(R),
@@ -239,10 +239,6 @@
 -spec which_applications() -> [{atom(), string(), string()}].
 -spec sequence_error([({'error', any()} | any())]) ->
           {'error', any()} | any().
--spec json_encode(any()) -> {'ok', string()} | {'error', any()}.
--spec json_decode(string()) -> {'ok', any()} | 'error'.
--spec json_to_term(any()) -> any().
--spec term_to_json(any()) -> any().
 -spec check_expiry(integer()) -> rabbit_types:ok_or_error(any()).
 -spec base64url(binary()) -> string().
 -spec interval_operation
@@ -266,6 +262,9 @@
 -spec rpc_call(node(), atom(), atom(), [any()], number()) -> any().
 -spec report_default_thread_pool_size() -> 'ok'.
 -spec get_gc_info(pid()) -> integer().
+-spec group_proplists_by(fun((proplists:proplist()) -> any()),
+                         list(proplists:proplist())) -> list(list(proplists:proplist())).
+
 
 %%----------------------------------------------------------------------------
 
@@ -735,52 +734,39 @@ compose_pid(Node, Cre, Id, Ser) ->
     <<131,NodeEnc/binary>> = term_to_binary(Node),
     binary_to_term(<<131,103,NodeEnc/binary,Id:32,Ser:32,Cre:8>>).
 
-version_compare(A, B, lte) ->
-    case version_compare(A, B) of
-        eq -> true;
-        lt -> true;
-        gt -> false
-    end;
-version_compare(A, B, gte) ->
-    case version_compare(A, B) of
-        eq -> true;
-        gt -> true;
-        lt -> false
-    end;
-version_compare(A, B, Result) ->
-    Result =:= version_compare(A, B).
+version_compare(A, B, eq)  -> rabbit_semver:eql(A, B);
+version_compare(A, B, lt)  -> rabbit_semver:lt(A, B);
+version_compare(A, B, lte) -> rabbit_semver:lte(A, B);
+version_compare(A, B, gt)  -> rabbit_semver:gt(A, B);
+version_compare(A, B, gte) -> rabbit_semver:gte(A, B).
 
-version_compare(A, A) ->
-    eq;
-version_compare([], [$0 | B]) ->
-    version_compare([], dropdot(B));
-version_compare([], _) ->
-    lt; %% 2.3 < 2.3.1
-version_compare([$0 | A], []) ->
-    version_compare(dropdot(A), []);
-version_compare(_, []) ->
-    gt; %% 2.3.1 > 2.3
-version_compare(A,  B) ->
-    {AStr, ATl} = lists:splitwith(fun (X) -> X =/= $. end, A),
-    {BStr, BTl} = lists:splitwith(fun (X) -> X =/= $. end, B),
-    ANum = list_to_integer(AStr),
-    BNum = list_to_integer(BStr),
-    if ANum =:= BNum -> version_compare(dropdot(ATl), dropdot(BTl));
-       ANum < BNum   -> lt;
-       ANum > BNum   -> gt
+version_compare(A, B) ->
+    case version_compare(A, B, lt) of
+        true -> lt;
+        false -> case version_compare(A, B, gt) of
+                     true -> gt;
+                     false -> eq
+                 end
     end.
 
 %% a.b.c and a.b.d match, but a.b.c and a.d.e don't. If
 %% versions do not match that pattern, just compare them.
+%%
+%% Special case for 3.6.6 because it introduced a change to the schema.
+%% e.g. 3.6.6 is not compatible with 3.6.5
+%% This special case can be removed once 3.6.x reaches EOL
 version_minor_equivalent(A, B) ->
-    {ok, RE} = re:compile("^(\\d+\\.\\d+)(\\.\\d+)(\\.\\d+)?\$"),
-    Opts = [{capture, all_but_first, list}],
-    case {re:run(A, RE, Opts), re:run(B, RE, Opts)} of
-        {{match, [A1|_]}, {match, [B1|_]}} -> A1 =:= B1;
-        _                                  -> A =:= B
-    end.
+    {{MajA, MinA, PatchA, _}, _} = rabbit_semver:normalize(rabbit_semver:parse(A)),
+    {{MajB, MinB, PatchB, _}, _} = rabbit_semver:normalize(rabbit_semver:parse(B)),
 
-dropdot(A) -> lists:dropwhile(fun (X) -> X =:= $. end, A).
+    case {MajA, MinA, MajB, MinB} of
+        {3, 6, 3, 6} -> if
+                            PatchA >= 6 -> PatchB >= 6;
+                            PatchA < 6  -> PatchB < 6;
+                            true -> false
+                        end;
+        _            -> MajA =:= MajB andalso MinA =:= MinB
+    end.
 
 dict_cons(Key, Value, Dict) ->
     dict:update(Key, fun (List) -> [Value | List] end, [Value], Dict).
@@ -901,7 +887,15 @@ pget_or_die(K, P) ->
         V         -> V
     end.
 
-%% property merge 
+pupdate(K, UpdateFun, P) ->
+    case lists:keyfind(K, 1, P) of
+        {K, V} ->
+            pset(K, UpdateFun(V), P);
+        _ ->
+            undefined
+    end.
+
+%% property merge
 pmerge(Key, Val, List) ->
       case proplists:is_defined(Key, List) of
               true -> List;
@@ -911,10 +905,17 @@ pmerge(Key, Val, List) ->
 %% proplists merge
 plmerge(P1, P2) ->
     dict:to_list(dict:merge(fun(_, V, _) ->
-                                V 
-                            end, 
-                            dict:from_list(P1), 
+                                V
+                            end,
+                            dict:from_list(P1),
                             dict:from_list(P2))).
+
+%% groups a list of proplists by a key function
+group_proplists_by(KeyFun, ListOfPropLists) ->
+    Res = lists:foldl(fun(P, Agg) ->
+                        dict:update(KeyFun(P), fun (O) -> [P|O] end, [P], Agg)
+                      end, dict:new(), ListOfPropLists),
+    [ X || {_, X} <- dict:to_list(Res)].
 
 pset(Key, Value, List) -> [{Key, Value} | proplists:delete(Key, List)].
 
@@ -966,7 +967,8 @@ is_os_process_alive(Pid) ->
                             run_ps(Pid) =:= 0
                     end},
              {win32, fun () ->
-                             Cmd = "tasklist /nh /fi \"pid eq " ++ Pid ++ "\" ",
+                             Cmd = "tasklist /nh /fi \"pid eq " ++
+                                 rabbit_data_coercion:to_list(Pid) ++ "\" ",
                              Res = os_cmd(Cmd ++ "2>&1"),
                              case re:run(Res, "erl\\.exe", [{capture, none}]) of
                                  match -> true;
@@ -982,7 +984,8 @@ with_os(Handlers) ->
     end.
 
 run_ps(Pid) ->
-    Port = erlang:open_port({spawn, "ps -p " ++ Pid},
+    Cmd  = "ps -p " ++ rabbit_data_coercion:to_list(Pid),
+    Port = erlang:open_port({spawn, Cmd},
                             [exit_status, {line, 16384},
                              use_stdio, stderr_to_stdout]),
     exit_loop(Port).
@@ -1028,42 +1031,6 @@ which_applications() ->
 sequence_error([T])                      -> T;
 sequence_error([{error, _} = Error | _]) -> Error;
 sequence_error([_ | Rest])               -> sequence_error(Rest).
-
-json_encode(Term) ->
-    try
-        {ok, mochijson2:encode(Term)}
-    catch
-        exit:{json_encode, E} ->
-            {error, E}
-    end.
-
-json_decode(Term) ->
-    try
-        {ok, mochijson2:decode(Term)}
-    catch
-        %% Sadly `mochijson2:decode/1' does not offer a nice way to catch
-        %% decoding errors...
-        error:_ -> error
-    end.
-
-json_to_term({struct, L}) ->
-    [{K, json_to_term(V)} || {K, V} <- L];
-json_to_term(L) when is_list(L) ->
-    [json_to_term(I) || I <- L];
-json_to_term(V) when is_binary(V) orelse is_number(V) orelse V =:= null orelse
-                     V =:= true orelse V =:= false ->
-    V.
-
-%% You can use the empty_struct value to represent empty JSON objects.
-term_to_json(empty_struct) ->
-    {struct, []};
-term_to_json([{_, _}|_] = L) ->
-    {struct, [{K, term_to_json(V)} || {K, V} <- L]};
-term_to_json(L) when is_list(L) ->
-    [term_to_json(I) || I <- L];
-term_to_json(V) when is_binary(V) orelse is_number(V) orelse V =:= null orelse
-                     V =:= true orelse V =:= false ->
-    V.
 
 check_expiry(N) when N < 0                 -> {error, {value_negative, N}};
 check_expiry(_N)                           -> ok.
