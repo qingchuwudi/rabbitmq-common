@@ -1,12 +1,36 @@
-sudo: false
+# vim:sw=2:et:
+
+# Use Ubuntu Trusty to have access to Elixir.
+dist: trusty
+group: beta
+sudo: required
+
 language: erlang
 notifications:
   email:
-    - bypf2009@vip.qq.com
-
+    - alerts@rabbitmq.com
+addons:
+  apt:
+    packages:
+      - xsltproc
 otp_release:
   - "18.3"
   - "19.0"
 
+# The checkout made by Travis is a "detached HEAD" and branches
+# information is missing. Our Erlang.mk's git_rmq fetch method relies on
+# it, so we need to restore it.
+#
+# We simply fetch master and, if it exists, stable branches. A branch is
+# created, pointing to the detached HEAD.
+before_script:
+  - |
+    git checkout -B "${TRAVIS_TAG:-${TRAVIS_BRANCH}}"
+    git remote add upstream https://github.com/$TRAVIS_REPO_SLUG.git
+    git fetch upstream stable:stable || :
+    git fetch upstream master:master || :
 
 script: make tests
+
+cache:
+  apt: true

@@ -1,8 +1,10 @@
 PROJECT = rabbit_common
+PROJECT_DESCRIPTION = Modules shared by rabbitmq-server and rabbitmq-erlang-client
 
+LOCAL_DEPS = compiler syntax_tools xmerl
 BUILD_DEPS = rabbitmq_codegen
-DEPS = lager
-TEST_DEPS = mochiweb
+DEPS = lager jsx
+TEST_DEPS = proper
 
 .DEFAULT_GOAL = all
 
@@ -23,6 +25,7 @@ include mk/rabbitmq-components.mk
 include erlang.mk
 include mk/rabbitmq-build.mk
 include mk/rabbitmq-dist.mk
+include mk/rabbitmq-tools.mk
 
 # --------------------------------------------------------------------
 # Framing sources generation.

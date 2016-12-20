@@ -25,8 +25,9 @@
          check_exclusive_access/2, with_exclusive_access_or_die/3,
          stat/1, deliver/2, requeue/3, ack/3, reject/4]).
 -export([list/0, list/1, info_keys/0, info/1, info/2, info_all/1, info_all/2,
-         emit_info_all/5, list_local/1, info_local/1]).
--export([list_down/1]).
+         emit_info_all/5, list_local/1, info_local/1,
+	 emit_info_local/4, emit_info_down/4]).
+-export([list_down/1, count/1]).
 -export([force_event_refresh/1, notify_policy_changed/1]).
 -export([consumers/1, consumers_all/1,  emit_consumers_all/4, consumer_info_keys/0]).
 -export([basic_get/4, basic_consume/10, basic_cancel/4, notify_decorators/1]).
@@ -34,14 +35,14 @@
 -export([notify_down_all/2, notify_down_all/3, activate_limit_all/2, credit/5]).
 -export([on_node_up/1, on_node_down/1]).
 -export([update/2, store_queue/1, update_decorators/1, policy_changed/2]).
--export([update_mirroring/1, sync_mirrors/1, cancel_sync_mirrors/1]).
+-export([update_mirroring/1, sync_mirrors/1, cancel_sync_mirrors/1, is_mirrored/1]).
 
 -export([pid_of/1, pid_of/2]).
 
 %% internal
 -export([internal_declare/2, internal_delete/1, run_backing_queue/3,
          set_ram_duration_target/2, set_maximum_since_use/2,
-         emit_info_local/4, emit_info_down/4, emit_consumers_local/3]).
+	 emit_consumers_local/3]).
 
 -include("rabbit.hrl").
 -include_lib("stdlib/include/qlc.hrl").
@@ -195,6 +196,7 @@
           'ok' | rabbit_types:error('not_mirrored').
 -spec cancel_sync_mirrors(rabbit_types:amqqueue() | pid()) ->
           'ok' | {'ok', 'not_syncing'}.
+-spec is_mirrored(rabbit_types:amqqueue()) -> boolean().
 
 -spec pid_of(rabbit_types:amqqueue()) ->
           {'ok', pid()} | rabbit_types:error('not_found').
@@ -260,8 +262,13 @@ find_durable_queues() ->
               qlc:e(qlc:q([Q || Q = #amqqueue{name = Name,
                                               pid  = Pid}
                                     <- mnesia:table(rabbit_durable_queue),
-                                node(Pid) == Node,
-                                mnesia:read(rabbit_queue, Name, read) =:= []]))
+                                node(Pid) == Node andalso
+				%% Terminations on node down will not remove the rabbit_queue
+				%% record if it is a mirrored queue (such info is now obtained from
+				%% the policy). Thus, we must check if the local pid is alive
+				%% - if the record is present - in order to restart.
+						    (mnesia:read(rabbit_queue, Name, read) =:= []
+						     orelse not erlang:is_process_alive(Pid))]))
       end).
 
 recover_durable_queues(QueuesAndRecoveryTerms) ->
@@ -280,7 +287,7 @@ declare(QueueName, Durable, AutoDelete, Args, Owner) ->
 %% The Node argument suggests where the queue (master if mirrored)
 %% should be. Note that in some cases (e.g. with "nodes" policy in
 %% effect) this might not be possible to satisfy.
-declare(QueueName, Durable, AutoDelete, Args, Owner, Node) ->
+declare(QueueName = #resource{virtual_host = VHost}, Durable, AutoDelete, Args, Owner, Node) ->
     ok = check_declare_arguments(QueueName, Args),
     Q = rabbit_queue_decorator:set(
           rabbit_policy:set(#amqqueue{name               = QueueName,
@@ -295,7 +302,8 @@ declare(QueueName, Durable, AutoDelete, Args, Owner, Node) ->
                                       gm_pids            = [],
                                       state              = live,
                                       policy_version     = 0,
-                                      slave_pids_pending_shutdown = []})),
+                                      slave_pids_pending_shutdown = [],
+                                      vhost                       = VHost})),
 
     Node1 = case rabbit_queue_master_location_misc:get_location(Q)  of
               {ok, Node0}  -> Node0;
@@ -582,6 +590,20 @@ list_down(VHostPath) ->
                                      not sets:is_element(N, PresentS)
                              end, sets:from_list(Durable))).
 
+count(VHost) ->
+  try
+    %% this is certainly suboptimal but there is no way to count
+    %% things using a secondary index in Mnesia. Our counter-table-per-node
+    %% won't work here because with master migration of mirrored queues
+    %% the "ownership" of queues by nodes becomes a non-trivial problem
+    %% that requires a proper consensus algorithm.
+    length(mnesia:dirty_index_read(rabbit_queue, VHost, #amqqueue.vhost))
+  catch _:Err ->
+    rabbit_log:error("Failed to fetch number of queues in vhost ~p:~n~p~n",
+                     [VHost, Err]),
+    0
+  end.
+
 info_keys() -> rabbit_amqqueue_process:info_keys().
 
 map(Qs, F) -> rabbit_misc:filter_exit_map(F, Qs).
@@ -804,6 +826,7 @@ internal_delete(QueueName) ->
                       T = rabbit_binding:process_deletions(Deletions),
                       fun() ->
                               ok = T(),
+			      rabbit_core_metrics:queue_deleted(QueueName),
                               ok = rabbit_event:notify(queue_deleted,
                                                        [{name, QueueName}])
                       end
@@ -877,6 +900,9 @@ sync_mirrors(QPid)                  -> delegate:call(QPid, sync_mirrors).
 cancel_sync_mirrors(#amqqueue{pid = QPid}) -> delegate:call(QPid, cancel_sync_mirrors);
 cancel_sync_mirrors(QPid)                  -> delegate:call(QPid, cancel_sync_mirrors).
 
+is_mirrored(Q) ->
+    rabbit_mirror_queue_misc:is_mirrored(Q).
+
 on_node_up(Node) ->
     ok = rabbit_misc:execute_mnesia_transaction(
            fun () ->
@@ -921,11 +947,11 @@ on_node_down(Node) ->
     rabbit_misc:execute_mnesia_tx_with_tail(
       fun () -> QsDels =
                     qlc:e(qlc:q([{QName, delete_queue(QName)} ||
-                                    #amqqueue{name = QName, pid = Pid,
-                                              slave_pids = []}
+                                    #amqqueue{name = QName, pid = Pid} = Q
                                         <- mnesia:table(rabbit_queue),
-                                    node(Pid) == Node andalso
-                                    not rabbit_mnesia:is_process_alive(Pid)])),
+				    not rabbit_amqqueue:is_mirrored(Q) andalso
+					node(Pid) == Node andalso
+					not rabbit_mnesia:is_process_alive(Pid)])),
                 {Qs, Dels} = lists:unzip(QsDels),
                 T = rabbit_binding:process_deletions(
                       lists:foldl(fun rabbit_binding:combine_deletions/2,
@@ -934,6 +960,7 @@ on_node_down(Node) ->
                         T(),
                         lists:foreach(
                           fun(QName) ->
+				  rabbit_core_metrics:queue_deleted(QName),
                                   ok = rabbit_event:notify(queue_deleted,
                                                            [{name, QName}])
                           end, Qs)
