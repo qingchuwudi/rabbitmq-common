@@ -143,7 +143,9 @@
           policy_version,
           slave_pids_pending_shutdown,
           vhost,                       %% secondary index
-          options = #{}}).
+          options = #{},
+          type = classic,
+          quorum_nodes }).
 
 -record(exchange_serial, {name, next}).
 
@@ -234,8 +236,8 @@
 
 -define(COPYRIGHT_MESSAGE, "Copyright (C) 2007-2018 Pivotal Software, Inc.").
 -define(INFORMATION_MESSAGE, "Licensed under the MPL.  See http://www.rabbitmq.com/").
--define(OTP_MINIMUM, "19.3").
--define(ERTS_MINIMUM, "8.3").
+-define(OTP_MINIMUM, "21.0").
+-define(ERTS_MINIMUM, "10.0").
 
 %% EMPTY_FRAME_SIZE, 8 = 1 + 2 + 4 + 1
 %%  - 1 byte of frame type
@@ -294,3 +296,7 @@
 %% For event audit purposes
 -define(INTERNAL_USER, <<"rmq-internal">>).
 -define(UNKNOWN_USER,  <<"unknown">>).
+
+%% Store metadata in the trace files when message tracing is enabled.
+-define(LG_INFO(Info), is_pid(whereis(lg)) andalso (lg ! Info)).
+-define(LG_PROCESS_TYPE(Type), ?LG_INFO(#{process_type => Type})).
