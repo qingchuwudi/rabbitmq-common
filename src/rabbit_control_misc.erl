@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_control_misc).
@@ -91,19 +91,19 @@ step_with_exit_handler(AggregatorPid, Ref, Fun, Item) ->
 %% processes. await_emitters_termination/1 helper can be used as a
 %% last statement of remote function to ensure this behaviour.
 spawn_emitter_caller(Node, Mod, Fun, Args, Ref, Pid, Timeout) ->
-    spawn_monitor(
-      fun () ->
-              case rpc_call_emitter(Node, Mod, Fun, Args, Ref, Pid, Timeout) of
-                  {error, _} = Error        ->
-                      Pid ! {Ref, error, Error};
-                  {bad_argument, _} = Error ->
-                      Pid ! {Ref, error, Error};
-                  {badrpc, _} = Error       ->
-                      Pid ! {Ref, error, Error};
-                  _                         ->
-                      ok
-              end
-      end),
+    _ = spawn_monitor(
+          fun () ->
+                  case rpc_call_emitter(Node, Mod, Fun, Args, Ref, Pid, Timeout) of
+                      {error, _} = Error        ->
+                          Pid ! {Ref, error, Error};
+                      {bad_argument, _} = Error ->
+                          Pid ! {Ref, error, Error};
+                      {badrpc, _} = Error       ->
+                          Pid ! {Ref, error, Error};
+                      _                         ->
+                          ok
+                  end
+          end),
     ok.
 
 rpc_call_emitter(Node, Mod, Fun, Args, Ref, Pid, Timeout) ->
@@ -123,14 +123,15 @@ collect_monitors([]) ->
     ok;
 collect_monitors([Monitor|Rest]) ->
     receive
-        {'DOWN', Monitor, _Pid, normal} ->
+        {'DOWN', Monitor, process, _Pid, normal} ->
             collect_monitors(Rest);
-        {'DOWN', Monitor, _Pid, noproc} ->
+        {'DOWN', Monitor, process, _Pid, noproc} ->
             %% There is a link and a monitor to a process. Matching
             %% this clause means that process has gracefully
             %% terminated even before we've started monitoring.
             collect_monitors(Rest);
-        {'DOWN', _, Pid, Reason} ->
+        {'DOWN', _, process, Pid, Reason} when Reason =/= normal,
+                                               Reason =/= noproc ->
             exit({emitter_exit, Pid, Reason})
     end.
 
@@ -142,7 +143,7 @@ collect_monitors([Monitor|Rest]) ->
 %% number of live nodes, but it's not mandatory - thus more generic
 %% name of 'ChunkCount' was chosen.
 wait_for_info_messages(Pid, Ref, Fun, Acc0, Timeout, ChunkCount) ->
-    notify_if_timeout(Pid, Ref, Timeout),
+    _ = notify_if_timeout(Pid, Ref, Timeout),
     wait_for_info_messages(Ref, Fun, Acc0, ChunkCount).
 
 wait_for_info_messages(Ref, Fun, Acc0, ChunksLeft) ->

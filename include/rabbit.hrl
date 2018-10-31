@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is Pivotal Software, Inc.
-%% Copyright (c) 2007-2015 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
 %%
 
 %% Passed around most places
@@ -38,6 +38,8 @@
 -record(permission, {configure, write, read}).
 -record(user_vhost, {username, virtual_host}).
 -record(user_permission, {user_vhost, permission}).
+-record(topic_permission_key, {user_vhost, exchange}).
+-record(topic_permission, {topic_permission_key, permission}).
 
 %% Represents a vhost.
 %%
@@ -124,7 +126,8 @@
           scratches,       %% durable, explicitly updated via update_scratch/3
           policy,          %% durable, implicitly updated when policy changes
           operator_policy, %% durable, implicitly updated when policy changes
-          decorators}).    %% transient, recalculated in store/1 (i.e. recovery)
+          decorators,
+          options = #{}}).    %% transient, recalculated in store/1 (i.e. recovery)
 
 -record(amqqueue, {
           name, durable, auto_delete, exclusive_owner = none, %% immutable
@@ -139,7 +142,8 @@
           state,                       %% durable (have we crashed?)
           policy_version,
           slave_pids_pending_shutdown,
-          vhost}).                     %% secondary index
+          vhost,                       %% secondary index
+          options = #{}}).
 
 -record(exchange_serial, {name, next}).
 
@@ -196,7 +200,8 @@
                  %% e.g. [{rabbitmq_management, ["3.5.7", "3.6.1"]},
                  %%       {rabbitmq_federation, ["3.5.7", "3.6.1"]},
                  %%       {rabbitmq_email,      ["0.1.0"]}]
-                 dependency_version_requirements %% [{atom(), [string()]}]
+                 dependency_version_requirements, %% [{atom(), [string()]}]
+                 extra_dependencies %% string()
                 }).
 
 %% used to track connections across virtual hosts
@@ -227,10 +232,10 @@
 
 %%----------------------------------------------------------------------------
 
--define(COPYRIGHT_MESSAGE, "Copyright (C) 2007-2016 Pivotal Software, Inc.").
+-define(COPYRIGHT_MESSAGE, "Copyright (C) 2007-2018 Pivotal Software, Inc.").
 -define(INFORMATION_MESSAGE, "Licensed under the MPL.  See http://www.rabbitmq.com/").
--define(OTP_MINIMUM, "18.3").
--define(ERTS_MINIMUM, "7.3").
+-define(OTP_MINIMUM, "19.3").
+-define(ERTS_MINIMUM, "8.3").
 
 %% EMPTY_FRAME_SIZE, 8 = 1 + 2 + 4 + 1
 %%  - 1 byte of frame type
@@ -249,11 +254,11 @@
 
 -define(HIBERNATE_AFTER_MIN,        1000).
 -define(DESIRED_HIBERNATE,         10000).
--define(CREDIT_DISC_BOUND,   {2000, 500}).
+-define(CREDIT_DISC_BOUND,   {4000, 800}).
 %% When we discover that we should write some indices to disk for some
 %% betas, the IO_BATCH_SIZE sets the number of betas that we must be
 %% due to write indices for before we do any work at all.
--define(IO_BATCH_SIZE, 2048). %% next power-of-2 after ?CREDIT_DISC_BOUND
+-define(IO_BATCH_SIZE, 4096). %% next power-of-2 after ?CREDIT_DISC_BOUND
 
 -define(INVALID_HEADERS_KEY, <<"x-invalid-headers">>).
 -define(ROUTING_HEADERS, [<<"CC">>, <<"BCC">>]).
@@ -262,6 +267,9 @@
 -define(EXCHANGE_DELETE_IN_PROGRESS_COMPONENT, <<"exchange-delete-in-progress">>).
 
 -define(CHANNEL_OPERATION_TIMEOUT, rabbit_misc:get_channel_operation_timeout()).
+
+%% Max supported number of priorities for a priority queue.
+-define(MAX_SUPPORTED_PRIORITY, 255).
 
 %% Trying to send a term across a cluster larger than 2^31 bytes will
 %% cause the VM to exit with "Absurdly large distribution output data
@@ -282,3 +290,7 @@
 -define(LOG_TRUNC, {100000, {2000, 100, 50, 5}}).
 
 -define(store_proc_name(N), rabbit_misc:store_proc_name(?MODULE, N)).
+
+%% For event audit purposes
+-define(INTERNAL_USER, <<"rmq-internal">>).
+-define(UNKNOWN_USER,  <<"unknown">>).

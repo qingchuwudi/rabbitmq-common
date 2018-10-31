@@ -1,3 +1,6 @@
+%% This module is based on the autocluster_backend module
+%% from rabbitmq-autocluster by Gavin Roy.
+%%
 %% Copyright (c) 2014-2015 AWeber Communications
 %% All rights reserved.
 %%
@@ -9,7 +12,7 @@
 %%  * Redistributions in binary form must reproduce the above copyright notice,
 %%    this list of conditions and the following disclaimer in the documentation
 %%    and/or other materials provided with the distribution.
-%%  * Neither the name of the rabbitmq-autocluster-consul plugin nor the names of its
+%%  * Neither the name of the project nor the names of its
 %%    contributors may be used to endorse or promote products derived from this
 %%    software without specific prior written permission.
 %%
@@ -28,17 +31,28 @@
 %%
 %% The Initial Developer of the Original Code is AWeber Communications.
 %% Copyright (c) 2014-2015 AWeber Communications
-%% Copyright (c) 2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2016-2017 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_peer_discovery_backend).
 
 -include("rabbit.hrl").
 
--callback list_nodes() -> {ok, Nodes :: list()} |
-                          {ok, {Nodes :: list(), NodeType :: rabbit_types:node_type()}} |
+-callback init() -> ok | {error, Reason :: string()}.
+
+-callback list_nodes() -> {ok, {Nodes :: list(), NodeType :: rabbit_types:node_type()}} |
                           {error, Reason :: string()}.
+
+-callback supports_registration() -> boolean().
 
 -callback register()   -> ok | {error, Reason :: string()}.
 
 -callback unregister() -> ok | {error, Reason :: string()}.
+
+-callback post_registration()   -> ok | {error, Reason :: string()}.
+
+-callback lock(Node :: atom())   -> {ok, Data :: term()} | not_supported | {error, Reason :: string()}.
+
+-callback unlock(Data :: term()) -> ok | {error, Reason :: string()}.
+
+-optional_callbacks([init/0]).
